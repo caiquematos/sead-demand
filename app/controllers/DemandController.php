@@ -6,13 +6,33 @@ class DemandController extends \BaseController {
 	
 	//demand status as Accepted, Cancelled, Postponed or Reopen, Undefined is default.
 	const ACCEPTED = 'A';
-	const CANCELLED = 'C';
+	const CANCELED = 'C'; // Demand once accepted by the admin, but canceled at some point
 	const POSTPONED = 'P';
 	const REOPEN = 'R';
 	const UNDEFINED = 'U';
+	const REJECTED = 'X'; // Demand rejected by the admin
+	const RESENT = 'S';
+	const DONE = 'D';
+	const LATE = 'L';
 	
 	const NO = 'N';
 	const YES = 'Y';
+	
+	const FULLMENU = 1;
+	const NOMENU = 2;
+	const REOPENMENU = 3;
+	const CANCELMENU = 4;
+	const RESENDMENU = 5;
+	const DONEMENU = 6;
+		
+	// Type of FCM message.
+	const ADDADMIN = 'add_demand_admin';
+	const ADDRECEIVER = 'add_demand_receiver';
+	const ADDSENT = 'add_demand_sent';
+	const UPDATE = 'update_demand';
+	const STATUS = 'update_status';
+	const IMPORTANCE = 'update_importance';
+	const READ = 'update_read';
 	
 	public function DemandController(){
 		$this->history = new HistoryController;
@@ -50,21 +70,24 @@ class DemandController extends \BaseController {
 			//If there is a superior, contact him.
 			//If not, contact the receiver directly.
 			$superior = User::find($receiver->superior);
+			$text = "De:".$sender->name." Para:".$receiver->name;
+
 			if($superior){
-				if ($superior->id != $sender->id){
-					$title = "Liberar Demanda";
-					$text = "De:".$sender->name." Para:".$receiver->name;
-					$data = ["noteId"=> $superior->id ."". $sender->id ."". $demand->id, "demand" => $demand];
-					$fcmToken = $superior->gcm;
-					$this->gcm->sendSingleNote($fcmToken, $title, $text, $data);
-				}
+				// The following would not notify if the user is your own superior
+				//	if ($superior->id != $sender->id) 
+				$title = "(liberar Demanda)";
+				$fcmToken = $superior->gcm;
+				$menuType = self::FULLMENU;
+				$storageType = self::ADDADMIN;
 			} else {
-				$title = $sender->name." (new)";
-				$text = $demand->subject;
-				$data = ["noteId"=> $sender->id ."". $demand->id];
+				$title = "(nova)";
 				$fcmToken = $receiver->gcm;
-				$this->gcm->sendSingleNote($fcmToken, $title, $text, $data);				
+				$menuType = self::DONEMENU;
+				$storageType = self::ADDRECEIVER;
 			}
+			
+			$data = ["menu"=>$menuType, "page"=>$menuType, "demand" => $demand, "sender"=>$sender, "receiver"=>$receiver, "type"=>$storageType];	
+			$this->gcm->sendSingleNote($fcmToken, $title, $text, $data);				
 		} else {
 			$result = ["success"=>false];
 		}
@@ -72,13 +95,69 @@ class DemandController extends \BaseController {
 		return $result;
 	}
 	
+	public function anyResend(){
+		$demand = Demand::find(Input::get('id'));
+
+		if ($demand) {
+			$sender = User::find($demand->sender);
+			$receiver = User::find($demand->receiver);
+			
+			if ($sender && $receiver) {
+				$demand->status = self::RESENT; //Resent
+				$demand->seen = self::NO; //no
+				$demand->save();
+				$result = ["success"=>true, "sender"=>$sender, "receiver"=>$receiver, "demand"=>$demand];
+				$this->history->save($sender->id, $sender->email . " reenviou a demanda " . $demand->id . " para " . $receiver->email);
+
+				//If there is a superior, contact him.
+				//If not, contact the receiver directly.
+				$superior = User::find($receiver->superior);
+				$text = "De:".$sender->name." Para:".$receiver->name;
+
+				if($superior){
+					// The following if would not notify if the user is your own superior
+					//	if ($superior->id != $sender->id) 
+					$title = "(liberar demanda)";
+					$menuType = self::FULLMENU;
+					$fcmToken = $superior->gcm;
+				} else {
+					$title = "(reenviada)";
+					$text = "De:".$sender->name." Para:".$receiver->name;
+					$menuType = self::DONEMENU;
+					$fcmToken = $receiver->gcm;
+				}
+				
+				$data = ["menu"=>$menuType, "page"=>self::FULLMENU, "demand" => $demand, "sender"=>$sender, "receiver"=>$receiver, "type"=>self::UPDATE];
+				$this->gcm->sendSingleNote($fcmToken, $title, $text, $data);
+			} else {
+				$result = ["success"=>false];
+			}
+		} else {
+			$result = ["success"=>false];
+		} 
+				
+		return $result;
+	}
+	
+	// Mark demand as read when clicked. TODO: Send data, but do not notify in background.
 	public function anyMarkAsRead(){
 		$demand = Demand::find(Input::get('demand'));
-		
+			
 		if ($demand){
 			$demand->seen = self::YES;
 			$demand->save();
-			$result = ["success"=>true];
+			
+			// Notify sender's device.
+			$sender = User::find($demand->sender);
+			$receiver = User::find($demand->receiver);
+			if ($sender && $receiver) {
+				$fcmToken = $sender->gcm;
+				$data = ['demand'=>$demand, 'sender'=>$sender, 'receiver'=>$receiver, "type"=>self::READ];
+				$this->gcm->sendHiddenMessage($fcmToken, $data);
+				
+				$result = ["success"=>true, "demand"=>$demand, "sender"=>$sender, "receiver"=>$receiver];
+			}
+			
 		} else {
 			$result = ["success"=>false];
 		}
@@ -86,56 +165,155 @@ class DemandController extends \BaseController {
 		return $result;
 	}
 	
-	
+	public function anySetImportance(){
+		$demand = Demand::find(Input::get('demand'));
+		
+		if ($demand) {
+			$demand->importance = Input::get('importance');
+			$demand->save();
+			
+			$sender = User::find($demand->sender);
+			$receiver = User::find($demand->receiver);
+			
+			if ($sender && $receiver){
+								
+				// Notification System
+				$text = "De:".$sender->name." Para:".$receiver->name;
+				$data = ["page"=>self::NOMENU, "demand" => $demand, "sender"=>$sender, "receiver"=>$receiver, "type"=>self::IMPORTANCE];
+				$title = "(nível:".$demand->importance.")";
+				$fcmToken = $sender->gcm;
+				$this->gcm->sendSingleNote($fcmToken, $title, $text, $data);
+					
+				$result = ["success"=>true, "demand"=>$demand, "sender"=>$sender, "receiver"=>$receiver];
+				
+			} else {
+				$result = ["success"=>false];
+			}
+			
+		} else {
+			$result = ["success"=>false];
+		}
+		
+		return $result;
+	}
+
 	//Set demand status as Accepted, Cancelled, Postponed or Reopen.
 	//Undefined is default.
 	//TODO: In case of 'postponed' something should be done
-	//{"A", "C", "P", "R", "U"}
+	//{"A", "C", "P", "R", "U", "X", "D"}
 	public function anySetStatus(){
 		$demand = Demand::find(Input::get('demand'));
 		
-		if ($demand){
+		if ($demand){			
 			$demand->status = Input::get('status');
+			if ($demand->status == self::REOPEN) $demand->seen = self::NO;
 			$demand->save();
-			
-			//Notification System
+					
 			$sender = User::find($demand->sender);
 			$receiver = User::find($demand->receiver);
-			$text = $demand->subject;
-			$data = ["noteId" => $sender->id ."". $demand->id, "demand" => $demand];
 			
-			switch($demand->status){
-				case self::CANCELLED:
-					$title = "Demanda (cancelada)";
-					$fcmToken = $sender->gcm;
-					$this->gcm->sendSingleNote($fcmToken, $title, $text, $data);
-					break;
-				case self::POSTPONED:
-					$title = "Demanda (adiada)";
-					$fcmToken = $sender->gcm;
-					$this->gcm->sendSingleNote($fcmToken, $title, $text, $data);
-					break;
-				case self::REOPEN:
-					//Inform sender
-					$title = "Demanda (reaberta)";
-					$fcmToken = $sender->gcm;
-					$this->gcm->sendSingleNote($fcmToken, $title, $text, $data);
-					//Inform receiver
-					$fcmToken = $receiver->gcm;
-					$this->gcm->sendSingleNote($fcmToken, $title, $text, $data);
-					break;
-				case self::ACCEPTED:
-					//Inform sender
-					$title = "Demanda (aceita)";
-					$fcmToken = $sender->gcm;
-					$this->gcm->sendSingleNote($fcmToken, $title, $text, $data);
-					//Inform receiver
-					$fcmToken = $receiver->gcm;
-					$this->gcm->sendSingleNote($fcmToken, $title, $text, $data);
-					break;
+			if ($sender && $receiver) {
+								
+				// Notification System
+				$text = "De:".$sender->name." Para:".$receiver->name;
+				$storageType = self::STATUS;
+
+				switch($demand->status){
+						
+						// Programmatically actions.
+					case self::LATE:
+						$menuType = self::NOMENU; // No need, as it is gonna be a hidden notification.
+						// Notify sender's superior
+						$senderSuperior = User::find($sender->superior);
+						if ($senderSuperior) {
+							$fcmToken = $senderSuperior->gcm;
+							$data = ["menu"=>$menuType, "page"=>$menuType, "demand" => $demand, "sender"=>$sender, "receiver"=>$receiver, "type"=>$storageType];
+							$this->gcm->sendSingleNote($fcmToken, $title, $text, $data);
+						}
+						// Notify sender
+						$fcmToken = $sender->gcm;
+						$data = ["menu"=>$menuType, "page"=>$menuType, "demand" => $demand, "sender"=>$sender, "receiver"=>$receiver, "type"=>$storageType];
+						$this->gcm->sendHiddenMessage($fcmToken, $data);
+						// Notify receiver
+						$fcmToken = $receiver->gcm;
+						$data = ["menu"=>$menuType, "page"=>$menuType, "demand" => $demand, "sender"=>$sender, "receiver"=>$receiver, "type"=>$storageType];
+						$this->gcm->sendHiddenMessage($fcmToken, $data);
+						break;
+						
+						// Normal user actions.
+					case self::DONE:
+						$title = "(concluída)";
+						// Notify sender
+						$menuType = self::NOMENU;
+						$data = ["menu"=>$menuType, "page"=>$menuType, "demand" => $demand, "sender"=>$sender, "receiver"=>$receiver, "type"=>$storageType];				
+						$fcmToken = $sender->gcm;
+						$this->gcm->sendSingleNote($fcmToken, $title, $text, $data);
+						// Notify sender's superior
+						$senderSuperior = User::find($sender->superior);
+						if ($senderSuperior) {
+							$fcmToken = $senderSuperior->gcm;
+							$this->gcm->sendSingleNote($fcmToken, $title, $text, $data);
+						}
+						break;
+										
+						// Admin user actions.
+					case self::ACCEPTED:
+						// Notify sender
+						$title = "(aceita)";
+						$fcmToken = $sender->gcm;
+						$menuType = self::NOMENU;
+						$data = ["menu"=>$menuType, "page"=>$menuType, "demand" => $demand, "sender"=>$sender, "receiver"=>$receiver, "type"=>$storageType];
+						$this->gcm->sendSingleNote($fcmToken, $title, $text, $data);
+						// Notify receiver
+						$menuType = self::DONEMENU;
+						$data = ["menu"=>$menuType, "page"=>$menuType, "demand" => $demand, "sender"=>$sender, "receiver"=>$receiver, "type"=>$storageType];
+						$fcmToken = $receiver->gcm;
+						$this->gcm->sendSingleNote($fcmToken, $title, $text, $data);
+						break;	
+					case self::CANCELED:
+						$title = "(cancelada)";
+						// Notify sender
+						$menuType = self::RESENDMENU;
+						$fcmToken = $sender->gcm;
+						$data = ["menu"=>$menuType, "page"=>$menuType, "demand" => $demand, "sender"=>$sender, "receiver"=>$receiver, "type"=>$storageType];
+						$this->gcm->sendSingleNote($fcmToken, $title, $text, $data);
+						// Notify receiver
+						$menuType = self::NOMENU;
+						$data = ["menu"=>$menuType, "page"=>$menuType, "demand" => $demand, "sender"=>$sender, "receiver"=>$receiver, "type"=>$storageType];
+						$fcmToken = $receiver->gcm;
+						$this->gcm->sendSingleNote($fcmToken, $title, $text, $data);
+						break;
+					case self::REJECTED:
+						$title = "(não aceita)";
+						$fcmToken = $sender->gcm;
+						$menuType = self::RESENDMENU;
+						$data = ["menu"=>$menuType, "page"=>$menuType, "demand" => $demand, "sender"=>$sender, "receiver"=>$receiver, "type"=>$storageType];
+						$this->gcm->sendSingleNote($fcmToken, $title, $text, $data);
+						break;
+						
+						// Hidden Notification zone.
+					case self::POSTPONED:
+					case self::UNDEFINED:
+					case self::REOPEN:
+						// Notify sender
+						$fcmToken = $sender->gcm;
+						$menuType = self::NOMENU; // No need, as it is gonna be a hidden notification.
+						$data = ["menu"=>$menuType, "page"=>$menuType, "demand" => $demand, "sender"=>$sender, "receiver"=>$receiver, "type"=>$storageType];
+						$this->gcm->sendHiddenMessage($fcmToken, $data);
+						// Notify receiver
+						$fcmToken = $receiver->gcm;
+						$menuType = self::NOMENU; // No need, as it is gonna be a hidden notification.
+						$data = ["menu"=>$menuType, "page"=>$menuType, "demand" => $demand, "sender"=>$sender, "receiver"=>$receiver, "type"=>$storageType];
+						$this->gcm->sendHiddenMessage($fcmToken, $data);
+						break;
+				}
+
+				$result = ["success"=>true, "demand"=>$demand, "sender"=>$sender, "receiver"=>$receiver];
+
+			} else {
+				$result = ["success"=>false];
 			}
 			
-			$result = ["success"=>true, "demand"=>$demand];
 		} else {
 			$result = ["success"=>false];
 		}
@@ -149,7 +327,7 @@ class DemandController extends \BaseController {
 		
 		if( $user ){
 			$list = Demand::whereSender($user->id)
-				->orderBy('id','desc')
+				->orderBy('updated_at','desc')
 				->get();
 			if( $list ){
 				foreach ( $list as $demand ){
@@ -157,7 +335,9 @@ class DemandController extends \BaseController {
 					$receiver = User::find($demand->receiver);
 					if ($sender && $receiver){
 						$demand->senderName = $sender->name;
+						$demand->senderEmail = $sender->email;
 						$demand->receiverName = $receiver->name;
+						$demand->receiverEmail = $receiver->email;
 					}else {
 						$result = ["success"=>false];
 					}
@@ -171,8 +351,8 @@ class DemandController extends \BaseController {
 		return $result;
 	}
 	
-	/* list of the demand received */
-	public function anyListReceived(){
+	/* (Not being used right now) list of the demand sent to me and admnistrated by me */
+	public function anyListMergeReceived(){
 		$user = User::whereEmail(Input::get('email'))->first();
 	
 		//TODO: Exclude users type "PONTA"
@@ -191,7 +371,7 @@ class DemandController extends \BaseController {
 			//list all demands where I am the receiver
 			$list = Demand::whereReceiver($user->id)
 				->whereStatus(self::ACCEPTED,self::REOPEN)
-				->orderBy('id','desc')
+				->orderBy('updated_at','desc')
 				->get();
 			
 			//merge both previous lists
@@ -220,6 +400,104 @@ class DemandController extends \BaseController {
 		return $result;
 	}
 	
+	// List demandS at some moment approved by my admin
+	public function anyListReceived(){
+		$user = User::whereEmail(Input::get('email'))->first();
+	
+		if( $user ){
+			 
+			$list = Demand::whereReceiver($user->id)
+				->where('status','<>',self::REJECTED)
+				->Where('status','<>',self::POSTPONED)
+				->Where('status','<>',self::UNDEFINED)
+				->Where('status','<>',self::RESENT)
+				->Where('status','<>',self::REOPEN)
+				->orderBy('updated_at','desc')
+				->get();
+			
+			// Catch the name of sender and receiver			
+			if( $list ){
+				foreach ( $list as $demand ){
+					$sender = User::find($demand->sender);
+					$receiver = User::find($demand->receiver);
+					
+					if ($sender && $receiver){
+						$demand->senderName = $sender->name;
+						$demand->senderEmail = $sender->email;
+						$demand->receiverName = $receiver->name;
+						$demand->receiverEmail = $receiver->email;
+					}else {
+						$result = ["success"=>false];
+					}
+				}
+			}
+			
+			$result = ["success"=>true, "list"=>$list];
+		} else {
+			$result = ["success"=>false];
+		}
+		
+		return $result;
+	}
+	
+	// List demands under my aprovement
+	public function anyListAdminReceived(){
+		$user = User::whereEmail(Input::get('email'))->first();
+	
+		if( $user ){
+			$subusers = User::whereSuperior($user->id)->get(); //workers under user supervision
+			$demandsByUser = [];
+			
+			//return $subusers;
+							
+			//list all demands where I am the the superior
+			foreach( $subusers as $subuser ){
+				//if($sub->superior != $user->id) //Dont list if I am the superior
+				$demandsByUser[] = Demand::whereReceiver($subuser->id)
+					->where('status','<>', self::CANCELED)
+					->where('status','<>', self::ACCEPTED)
+					->where('status','<>', self::REJECTED)
+					->orderBy('updated_at','desc')
+					->get();
+			}
+			
+			$sequenceOfDemands = [];
+			
+			if( $demandsByUser ){
+				foreach ( $demandsByUser as $demands ){
+					foreach ($demands as $demand){
+						$sender = User::find($demand->sender);
+						$receiver = User::find($demand->receiver);
+
+						if ($sender && $receiver){
+							$demand->senderName = $sender->name;
+							$demand->senderEmail = $sender->email;
+							$demand->receiverName = $receiver->name;
+							$demand->receiverEmail = $receiver->email;
+						}else {
+							$result = ["success"=>false];
+						}
+						
+						$sequenceOfDemands[] = $demand;
+					}
+				}
+			}		
+			
+			$collection = Collection::make($sequenceOfDemands);
+			$col = "updated_at";			
+			$sorted = $collection->sortByDesc(function($col){
+				return $col;
+			})->values()->all();
+			
+			$result = ["success"=>true, "list"=>$sorted];
+		} else {
+			$result = ["success"=>false];
+		}
+		
+		return $result;
+	}
+	
+	// List demand not seen yet
 	public function anyListUnread(){
 		$user = User::whereEmail(Input::get('email'))->first();
 		
@@ -233,6 +511,7 @@ class DemandController extends \BaseController {
 		return $result;
 	}
 	
+	// List demand already seen
 	public function anyListRead(){
 		$user = User::whereEmail(Input::get('email'))->first();
 		
@@ -246,13 +525,15 @@ class DemandController extends \BaseController {
 		return $result;
 	}
 	
-	/* return a list of demands that user sent by status */
-	public function anyListByStatus(){
+	// List demands user sent by status
+	// Accepted
+	// Canceled
+	public function anyListDemandByStatus(){
 		$user = User::whereEmail(Input::get('email'))->first();
 		
 		if( $user ){
 			$list = Demand::whereSender($user->id)->whereStatus(Input::get('status'))
-						->orderBy('id','desc')
+						->orderBy('updated_at','desc')
 						->get();
 			if( $list ){
 				foreach ( $list as $demand ){
@@ -260,13 +541,70 @@ class DemandController extends \BaseController {
 					$receiver = User::find($demand->receiver);
 					if ($sender && $receiver){
 						$demand->senderName = $sender->name;
+						$demand->senderEmail = $sender->email;
 						$demand->receiverName = $receiver->name;
+						$demand->receiverEmail = $receiver->email;
 					}else {
 						$result = ["success"=>false];
 					}
 				}
 			}
 			$result = ["success"=>true, "list"=>$list];
+		} else {
+			$result = ["success"=>false];
+		}
+		
+		return $result;
+	}
+	
+	// List demands user (as admin) supervised sent by status
+	// Accepted
+	// Canceled
+	public function anyListAdminDemandByStatus(){
+		$user = User::whereEmail(Input::get('email'))->first();
+		
+		if( $user ){
+			
+			$subusers = User::whereSuperior($user->id)->get(); //workers under user supervision
+			$demandsByUser = [];
+				
+			//list all demands where I am the the superior
+			foreach( $subusers as $subuser ){
+				$demandsByUser[] = Demand::whereReceiver($subuser->id)
+					->whereStatus(Input::get('status'))
+					->orderBy('updated_at','desc')
+					->get();
+			}
+			
+			$sequenceOfDemands = [];
+			
+			if( $demandsByUser ){
+				foreach ( $demandsByUser as $demands ){
+					foreach ($demands as $demand){
+						$sender = User::find($demand->sender);
+						$receiver = User::find($demand->receiver);
+
+						if ($sender && $receiver){
+							$demand->senderName = $sender->name;
+							$demand->senderEmail = $sender->email;
+							$demand->receiverName = $receiver->name;
+							$demand->receiverEmail = $receiver->email;
+						}else {
+							$result = ["success"=>false];
+						}
+						
+						$sequenceOfDemands[] = $demand;
+					}
+				}
+			}		
+			
+			$collection = Collection::make($sequenceOfDemands);
+			$col = "updated_at";			
+			$sorted = $collection->sortByDesc(function($col){
+				return $col;
+			})->values()->all();
+			
+			$result = ["success"=>true, "list"=>$sorted];
 		} else {
 			$result = ["success"=>false];
 		}

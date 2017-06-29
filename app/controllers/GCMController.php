@@ -8,10 +8,11 @@ class GCMController extends \BaseController {
 		return Response::make('Stop snooping around!');
 	}
 
-  public function sendNote($registatoin_ids, $message)
+  public function sendNote($registatoin_ids, $message, $type)
   {      
     $fields = [
       'registration_ids' => $registatoin_ids,
+			'message_type' => $type,
       'data' => $message
     ];
 		
@@ -59,12 +60,43 @@ class GCMController extends \BaseController {
 	 }
 	
 	//Send Single Notification
-	public function sendSingleNote($regId, $title, $text, $data){      
+	public function sendSingleNote($uniqueKey, $title, $text, $data){      
 		$message = ['title'=>$title, 'text'=>$text];
 		
     $fields = [
-      'to' => $regId,
+      'to' => $uniqueKey,
       'notification' => $message,
+			'data' => $data
+    ];
+		
+    $headers = [
+      self::FCM_API_KEY,
+      'Content-Type:application/json'
+    ];
+		
+		//Open connection
+    $ch = curl_init();
+    curl_setopt($ch, CURLOPT_URL, self::URL);
+    curl_setopt($ch, CURLOPT_POST, true);
+    curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+    curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($fields));
+    $result = curl_exec($ch); //Resquest a push notification
+    
+    if ($result === FALSE) {
+      die('Curl failed: ' . curl_error($ch));
+    }
+		
+    //Close connection
+    curl_close($ch);
+  }
+	
+	// This message wont generate a notification, but the device will get it anyway.
+	public function sendHiddenMessage($uniqueKey, $data){      
+			
+    $fields = [
+      'to' => $uniqueKey,
 			'data' => $data
     ];
 		
