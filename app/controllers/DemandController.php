@@ -18,6 +18,7 @@ class DemandController extends \BaseController {
 	const NO = 'N';
 	const YES = 'Y';
 	
+	// Type of menu
 	const FULLMENU = 1;
 	const NOMENU = 2;
 	const REOPENMENU = 3;
@@ -31,8 +32,15 @@ class DemandController extends \BaseController {
 	const ADDSENT = 'add_demand_sent';
 	const UPDATE = 'update_demand';
 	const STATUS = 'update_status';
-	const IMPORTANCE = 'update_importance';
+	const PRIOR = 'update_prior';
 	const READ = 'update_read';
+	
+	// Type of page environment
+	const RECEIVEDPAGE = 1;
+	const SENTPAGE = 2;
+	const ADMINPAGE = 3;
+	const STATUSPAGE = 4;
+	const CREATEPAGE = 5;
 	
 	public function DemandController(){
 		$this->history = new HistoryController;
@@ -58,7 +66,7 @@ class DemandController extends \BaseController {
 			$demand = new Demand;
 			$demand->sender = $sender->id;
 			$demand->receiver = $receiver->id;
-			$demand->importance = Input::get("importance");
+			$demand->prior = Input::get("prior");
 			$demand->status = self::UNDEFINED; //undefined
 			$demand->seen = self::NO; //no
 			$demand->subject = Input::get("subject");
@@ -165,11 +173,11 @@ class DemandController extends \BaseController {
 		return $result;
 	}
 	
-	public function anySetImportance(){
+	public function anySetPrior(){
 		$demand = Demand::find(Input::get('demand'));
 		
 		if ($demand) {
-			$demand->importance = Input::get('importance');
+			$demand->prior = Input::get('prior');
 			$demand->save();
 			
 			$sender = User::find($demand->sender);
@@ -179,8 +187,8 @@ class DemandController extends \BaseController {
 								
 				// Notification System
 				$text = "De:".$sender->name." Para:".$receiver->name;
-				$data = ["page"=>self::NOMENU, "demand" => $demand, "sender"=>$sender, "receiver"=>$receiver, "type"=>self::IMPORTANCE];
-				$title = "(nível:".$demand->importance.")";
+				$data = ["page"=>self::SENTPAGE, "demand" => $demand, "sender"=>$sender, "receiver"=>$receiver, "type"=>self::PRIOR, "menu"=>self::NOMENU];
+				$title = "(prioridade:".$demand->prior.")";
 				$fcmToken = $sender->gcm;
 				$this->gcm->sendSingleNote($fcmToken, $title, $text, $data);
 					
@@ -226,6 +234,7 @@ class DemandController extends \BaseController {
 						// Notify sender's superior
 						$senderSuperior = User::find($sender->superior);
 						if ($senderSuperior) {
+							$title = "(atrasada)";
 							$fcmToken = $senderSuperior->gcm;
 							$data = ["menu"=>$menuType, "page"=>$menuType, "demand" => $demand, "sender"=>$sender, "receiver"=>$receiver, "type"=>$storageType];
 							$this->gcm->sendSingleNote($fcmToken, $title, $text, $data);
@@ -245,7 +254,7 @@ class DemandController extends \BaseController {
 						$title = "(concluída)";
 						// Notify sender
 						$menuType = self::NOMENU;
-						$data = ["menu"=>$menuType, "page"=>$menuType, "demand" => $demand, "sender"=>$sender, "receiver"=>$receiver, "type"=>$storageType];				
+						$data = ["menu"=>$menuType, "page"=>$menuType, "demand" => $demand, "sender"=>$sender, "receiver"=>$receiver, "type"=>$storageType];
 						$fcmToken = $sender->gcm;
 						$this->gcm->sendSingleNote($fcmToken, $title, $text, $data);
 						// Notify sender's superior
@@ -259,11 +268,12 @@ class DemandController extends \BaseController {
 						// Admin user actions.
 					case self::ACCEPTED:
 						// Notify sender
-						$title = "(aceita)";
+						$title = "(deferida)";
 						$fcmToken = $sender->gcm;
 						$menuType = self::NOMENU;
 						$data = ["menu"=>$menuType, "page"=>$menuType, "demand" => $demand, "sender"=>$sender, "receiver"=>$receiver, "type"=>$storageType];
-						$this->gcm->sendSingleNote($fcmToken, $title, $text, $data);
+						if ($sender->id != $receiver->id)
+							$this->gcm->sendSingleNote($fcmToken, $title, $text, $data);
 						// Notify receiver
 						$menuType = self::DONEMENU;
 						$data = ["menu"=>$menuType, "page"=>$menuType, "demand" => $demand, "sender"=>$sender, "receiver"=>$receiver, "type"=>$storageType];
@@ -284,7 +294,7 @@ class DemandController extends \BaseController {
 						$this->gcm->sendSingleNote($fcmToken, $title, $text, $data);
 						break;
 					case self::REJECTED:
-						$title = "(não aceita)";
+						$title = "(indeferida)";
 						$fcmToken = $sender->gcm;
 						$menuType = self::RESENDMENU;
 						$data = ["menu"=>$menuType, "page"=>$menuType, "demand" => $demand, "sender"=>$sender, "receiver"=>$receiver, "type"=>$storageType];
@@ -610,6 +620,55 @@ class DemandController extends \BaseController {
 		}
 		
 		return $result;
+	}
+	
+	// This method specifically change status to "reject".
+	// When a demand is rejected, a reason why should be attached
+	// to it. On the DB reason is also a table.
+	public function anySetStatusToReject(){
+		
+		$demand = Demand::find(Input::get("demand"));
+				
+		if($demand) {
+			$demand->status = self::REJECTED;
+						
+			$reason = new Reason;
+			$reason->demand = $demand->id;
+			$reason->status = $demand->status;
+			$reason->reason = Input::get("reason");
+			$reason->comment = Input::get("comment");
+			$reason->save();
+			
+			$demand->reason = $reason->id;
+			$demand->save();
+			
+			$sender = User::find($demand->sender);
+			$receiver = User::find($demand->receiver);
+						
+			if ($sender && $receiver) {
+				$title = "(não aceita)";
+				$text = $demand->subject;
+				$fcmToken = $sender->gcm;
+				$menuType = self::RESENDMENU;
+				$storageType = self::ADDSENT;
+				$data = [
+					"menu"=>$menuType, 
+					"page"=>$menuType,
+					"demand" => $demand,
+					"reason" => $reason,
+					"sender"=>$sender, 
+					"receiver"=>$receiver,
+					"type"=>$storageType
+				];
+				$this->gcm->sendSingleNote($fcmToken, $title, $text, $data);
+				
+				$result = ["success"=>true, "demand"=>$demand, "sender"=>$sender, "receiver"=>$receiver, "reason"=>$reason];
+			} else $result = ["success"=>false];
+			
+		} else $result = ["success"=>false];
+		
+		return $result;
+		
 	}
 
 }
