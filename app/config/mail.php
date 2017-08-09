@@ -28,7 +28,7 @@ return array(
 	|
 	*/
 
-	'host' => 'mail.univasf.edu.br',
+	'host' => 'mail.edu.br',
 
 	/*
 	|--------------------------------------------------------------------------
@@ -54,7 +54,7 @@ return array(
 	|
 	*/
 
-	'from' => array('address' => 'sead@univasf.edu.br', 'name' => 'Demanda Sead'),
+	'from' => array('address' => 'edu.br', 'name' => 'Demanda Sead'),
 
 	/*
 	|--------------------------------------------------------------------------
@@ -80,7 +80,7 @@ return array(
 	|
 	*/
 
-	'username' => 'sead@univasf.edu.br',
+	'username' => 'univasf.edu.br',
 
 	/*
 	|--------------------------------------------------------------------------
@@ -93,7 +93,7 @@ return array(
 	|
 	*/
 
-	'password' => '@21sead',
+	'password' => '',
 
 	/*
 	|--------------------------------------------------------------------------
