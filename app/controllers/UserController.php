@@ -225,8 +225,11 @@ class UserController extends \BaseController {
 	
 	// Get confirmed employees by position
 	public function anyEmployee(){
+		$currentUser = User::find(Input::get("user"));
+		
 		$employees = User::wherePosition(Input::get("position"))
 			->whereStatus(self::YES) // Eliminate users who aren't active on the system.
+			->where('id','<>',$currentUser->id) // Eliminate the user who's sending.
 			->where('gcm','<>',"") // Eliminate users who don't have a fcm toke.
 			->get();
 		
@@ -261,5 +264,7 @@ class UserController extends \BaseController {
 					
 		return $result;
 	}
+	
+	
 	
 }
